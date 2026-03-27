@@ -1,14 +1,14 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const pdfParse = require('pdf-parse');
+const pdfParse = require('pdf-parse/lib/pdf-parse.js');
 const Anthropic = require('@anthropic-ai/sdk');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173' }));
+app.use(cors({ origin: /^http:\/\/localhost:\d+$/ }));
 app.use(express.json({ limit: '2mb' }));
 
 const upload = multer({
@@ -84,10 +84,17 @@ Generate the following 4 items:
    — Preserve the original structure and formatting conventions.
 
 2. coverLetter
-   — Opening paragraph: hook the reader, name the exact role and company, show genuine excitement.
-   — 2 body paragraphs: connect 2–3 specific achievements from the resume to the JD requirements. Be concrete, use numbers where possible.
-   — Closing paragraph: express enthusiasm, mention you'd love to discuss further, thank them.
-   — Tone: confident and personable, not stiff or generic. No hollow phrases like "I am writing to apply…"
+   Write this like a smart, self-aware human wrote it — not an AI. Study these principles:
+   - Open with something real and specific to this role/company. No "I am excited to apply" or "I believe I'd be a great fit."
+   - If there's an honest gap (experience level, career pivot), name it directly upfront. That reads as confident, not weak.
+   - Use concrete numbers and outcomes from the resume. Don't say "improved performance"; say "cut runtime from 2.5h to 1.3h."
+   - Short punchy sentences land harder than long ones. Mix them.
+   - Show genuine reasoning for wanting this specific role, not just any job.
+   - Let personality come through. A cover letter is also a writing sample.
+   - Do NOT use em dashes (—) anywhere in the cover letter. Use commas or semicolons instead.
+   - End with: "Thank you for your time and consideration," on its own line, then the candidate's first and last name only (no middle name) on the next line, separated by a blank line.
+   - Do NOT include the date, address block, or "Dear Hiring Manager," — start directly with the first body paragraph.
+   - 4–5 paragraphs total.
 
 3. whyThisCompany
    — 2–3 sentences answering "Why specifically this company?"
@@ -102,13 +109,20 @@ Generate the following 4 items:
    — Include one hook: something specific that excites you about the role or company.
    — End with a low-pressure call to action ("Happy to connect!" or "Would love to learn more about the team.")
 
+5. candidateName — The candidate's full name extracted from the resume (e.g. "Jane Doe"). If not found, use "Candidate".
+6. companyName — The company name extracted from the job description (e.g. "Google"). If not found, use "Company".
+7. contactInfo — A JSON object with contact details extracted from the resume. Only include fields that are present.
+   Keys: name (full name), email, phone, location (city, state), linkedin (URL without https://), github (URL without https://)
+   Example: { "name": "Jane Doe", "email": "jane@email.com", "phone": "+1 555-123-4567", "location": "San Jose, CA", "linkedin": "linkedin.com/in/janedoe", "github": "github.com/janedoe" }
+8. employers — An array of employer/company names exactly as they appear in the EXPERIENCE section of the updatedResume (not the job description company). These will be used to bold company names in the PDF.
+   Example: ["Google", "Meta Platforms", "Acme Corp"]
+
 Return ONLY a valid JSON object — no markdown code fences, no explanation, no text outside the JSON.
-Exact keys required: updatedResume, coverLetter, whyThisCompany, linkedinMessage.`;
+Exact keys required: updatedResume, coverLetter, whyThisCompany, linkedinMessage, candidateName, companyName, contactInfo, employers.`;
 
     const stream = anthropic.messages.stream({
       model: 'claude-sonnet-4-6',
-      max_tokens: 16000,
-      thinking: { type: 'adaptive' },
+      max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }],
     });
 
@@ -137,9 +151,15 @@ Exact keys required: updatedResume, coverLetter, whyThisCompany, linkedinMessage
     }
 
     // Validate expected keys
-    const required = ['updatedResume', 'coverLetter', 'whyThisCompany', 'linkedinMessage'];
+    const required = ['updatedResume', 'coverLetter', 'whyThisCompany', 'linkedinMessage', 'candidateName', 'companyName', 'contactInfo', 'employers'];
     for (const key of required) {
-      if (!result[key]) result[key] = '(No content generated for this section)';
+      if (!result[key]) {
+        if (key === 'candidateName') result[key] = 'Candidate';
+        else if (key === 'companyName') result[key] = 'Company';
+        else if (key === 'contactInfo') result[key] = {};
+        else if (key === 'employers') result[key] = [];
+        else result[key] = '(No content generated for this section)';
+      }
     }
 
     res.json(result);

@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
+import jsPDF from 'jspdf'
 
 const API = 'http://localhost:3001'
 
@@ -69,6 +70,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('updatedResume')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [editedContent, setEditedContent] = useState({})
 
   // Upload UI state
   const [inputMode, setInputMode] = useState('upload') // 'upload' | 'paste'
@@ -135,6 +137,9 @@ export default function App() {
     saveResume({ filename: 'Pasted Resume', text: pasteText.trim() })
   }
 
+  // ── Em-dash cleaner ─────────────────────────────────────────────────────
+  const cleanEmDashes = (text) => text.replace(/ — /g, ', ').replace(/—/g, ',')
+
   // ── Generate ────────────────────────────────────────────────────────────
 
   const generate = async () => {
@@ -156,6 +161,12 @@ export default function App() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
       setResults(data)
+      setEditedContent({
+        updatedResume:   data.updatedResume   || '',
+        coverLetter:     cleanEmDashes(data.coverLetter || ''),
+        whyThisCompany:  data.whyThisCompany  || '',
+        linkedinMessage: data.linkedinMessage || '',
+      })
       setActiveTab('updatedResume')
       setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
     } catch (e) {
@@ -166,11 +177,192 @@ export default function App() {
     }
   }
 
-  const downloadTxt = (text, name) => {
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }))
-    a.download = name
-    a.click()
+  const makeFilename = (type, ext = 'pdf') => {
+    if (!results) return `${type}.${ext}`
+    const name = (results.candidateName || 'Candidate').trim().replace(/\s+/g, '_')
+    const company = (results.companyName || 'Company').trim().replace(/\s+/g, '_')
+    return `${name}_${type}_${company}.${ext}`
+  }
+
+  const downloadPdf = (content, filename, type) => {
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+    const pageW = doc.internal.pageSize.getWidth()
+    const pageH = doc.internal.pageSize.getHeight()
+    const margin = 20
+    const maxW = pageW - margin * 2
+    let y = margin
+
+    const checkPage = (needed = 6) => {
+      if (y + needed > pageH - margin) { doc.addPage(); y = margin }
+    }
+
+    const addWrapped = (text, size, style, indent = 0, lineGap = 1.5) => {
+      doc.setFontSize(size)
+      doc.setFont('helvetica', style)
+      const wrapped = doc.splitTextToSize(text, maxW - indent)
+      wrapped.forEach(line => {
+        checkPage()
+        doc.text(line, margin + indent, y)
+        y += size * 0.38 + lineGap
+      })
+    }
+
+    if (type === 'resume') {
+      const candidateName = (results?.contactInfo?.name || results?.candidateName || '').trim().toLowerCase()
+      const employers = (results?.employers || []).map(e => e.trim())
+
+      // Bold the entire employer line (company name + location + date range)
+      const addEmployerLine = (text) => {
+        checkPage(8)
+        doc.setFontSize(9.5)
+        doc.setFont('helvetica', 'bold')
+        const wrapped = doc.splitTextToSize(text, maxW)
+        wrapped.forEach(line => {
+          checkPage()
+          doc.text(line, margin, y)
+          y += 9.5 * 0.38 + 1.5
+        })
+        y += 0.5
+      }
+
+      let firstLineRendered = false
+      let nextLineIsJobTitle = false
+      content.split('\n').forEach(raw => {
+        const line = raw.trimEnd()
+        if (!line.trim()) { y += 2; return }
+
+        // Always bold the very first non-empty line as the candidate name
+        if (!firstLineRendered) {
+          firstLineRendered = true
+          checkPage(8)
+          doc.setFontSize(18)
+          doc.setFont('helvetica', 'bold')
+          doc.text(line.trim(), margin, y)
+          y += 18 * 0.38 + 3
+          nextLineIsJobTitle = true  // the line right after the name is the position/headline
+          return
+        }
+
+        const isHeader = line.trim() === line.trim().toUpperCase()
+          && line.trim().length > 2
+          && /[A-Z]/.test(line.trim())
+          && !line.trim().startsWith('•')
+          && !line.trim().startsWith('-')
+          && !line.trim().match(/^\d/)
+
+        const startsWithEmployer = employers.some(e => line.trim().toLowerCase().startsWith(e.toLowerCase()))
+        const isBullet = !!line.match(/^\s*(•|-|\*)/)
+
+        if (isHeader) {
+          nextLineIsJobTitle = false
+          y += 3
+          checkPage(8)
+          doc.setFontSize(10.5)
+          doc.setFont('helvetica', 'bold')
+          doc.text(line.trim(), margin, y)
+          y += 4
+          doc.setLineWidth(0.25)
+          doc.setDrawColor(120, 120, 120)
+          doc.line(margin, y - 2, pageW - margin, y - 2)
+          y += 1.5
+        } else if (startsWithEmployer) {
+          addEmployerLine(line.trim())
+          nextLineIsJobTitle = true  // the line immediately after is the job title
+        } else if (nextLineIsJobTitle && !isBullet) {
+          nextLineIsJobTitle = false
+          addWrapped(line.trim(), 9.5, 'bold')
+          y += 0.5
+        } else if (isBullet) {
+          nextLineIsJobTitle = false
+          addWrapped(line.trim(), 9.5, 'normal', 4)
+          y += 0.5
+        } else {
+          nextLineIsJobTitle = false
+          addWrapped(line.trim(), 9.5, 'normal')
+          y += 0.5
+        }
+      })
+    } else {
+      // ── Cover Letter — professional layout matching reference ──
+      const ci = results?.contactInfo || {}
+      const name = ci.name || results?.candidateName || 'Candidate'
+      const company = results?.companyName || 'Company'
+
+      // Name — bold, large
+      doc.setFont('helvetica', 'bold')
+      doc.setFontSize(15)
+      doc.text(name, margin, y)
+      y += 7
+
+      // Contact line 1: email | phone | location
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(9)
+      doc.setTextColor(80, 80, 80)
+      const line1 = [ci.email, ci.phone, ci.location].filter(Boolean).join('  |  ')
+      if (line1) { doc.text(line1, margin, y); y += 4.5 }
+
+      // Contact line 2: linkedin | github
+      const line2 = [ci.linkedin, ci.github].filter(Boolean).join('  |  ')
+      if (line2) { doc.text(line2, margin, y); y += 4.5 }
+
+      doc.setTextColor(0, 0, 0)
+      y += 6
+
+      // Date — right aligned
+      const today = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+      doc.setFontSize(10)
+      const dateW = doc.getTextWidth(today)
+      doc.text(today, pageW - margin - dateW, y)
+      y += 7
+
+      // Recipient block
+      doc.text('Hiring Manager', margin, y); y += 5
+      doc.text(company, margin, y); y += 10
+
+      // Salutation
+      doc.setFont('helvetica', 'normal')
+      doc.text('Dear Hiring Manager,', margin, y)
+      y += 7
+
+      // Body paragraphs — split on double newlines, but also split sign-off from name
+      doc.setFontSize(10.5)
+      const rawParas = content.split(/\n\n+/).map(p => p.trim()).filter(Boolean)
+
+      // Expand any paragraph that has "Thank you..." followed by a name on the next line
+      const paragraphs = []
+      rawParas.forEach(para => {
+        const lines = para.split('\n').map(l => l.trim()).filter(Boolean)
+        if (lines.length >= 2 && /^thank you/i.test(lines[0])) {
+          paragraphs.push(lines[0])         // sign-off line
+          paragraphs.push(lines.slice(1).join(' ')) // name line(s)
+        } else {
+          paragraphs.push(para.replace(/\n/g, ' ').trim())
+        }
+      })
+
+      paragraphs.forEach(para => {
+        const trimmed = para.trim()
+        if (!trimmed) return
+
+        const isSignOff = /^thank you/i.test(trimmed)
+        const isName = /^thank you/i.test(trimmed)
+          ? false
+          : trimmed.split(' ').length <= 4 && paragraphs.indexOf(para) === paragraphs.length - 1
+
+        if (isSignOff) {
+          y += 4
+          addWrapped(trimmed, 10.5, 'normal')
+          y += 3
+        } else if (isName) {
+          addWrapped(trimmed, 10.5, 'bold')
+        } else {
+          addWrapped(trimmed, 10.5, 'normal', 0, 1.8)
+          y += 5
+        }
+      })
+    }
+
+    doc.save(filename)
   }
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -398,21 +590,27 @@ export default function App() {
             {/* Tab content */}
             {TABS.map(tab => {
               if (activeTab !== tab.id) return null
-              const content = results[tab.id] || ''
+              const content = editedContent[tab.id] ?? results[tab.id] ?? ''
+              const setContent = (val) => setEditedContent(prev => ({ ...prev, [tab.id]: val }))
               return (
                 <div key={tab.id} className="p-5 space-y-3 animate-fade-in">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
                       <span>{tab.emoji}</span> {tab.label}
+                      <span className="text-[10px] text-slate-400 font-normal ml-1">· editable</span>
                     </h3>
                     <div className="flex items-center gap-2">
-                      {tab.id === 'updatedResume' && (
+                      {(tab.id === 'updatedResume' || tab.id === 'coverLetter') && (
                         <button
-                          onClick={() => downloadTxt(content, 'updated-resume.txt')}
+                          onClick={() => {
+                            const type = tab.id === 'updatedResume' ? 'resume' : 'cover'
+                            const label = tab.id === 'updatedResume' ? 'Resume' : 'CoverLetter'
+                            downloadPdf(content, makeFilename(label), type)
+                          }}
                           className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
                         >
                           <Icon d={Icons.download} size="w-3.5 h-3.5" />
-                          Download
+                          Download PDF
                         </button>
                       )}
                       <button
@@ -432,14 +630,18 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div
-                    className={`rounded-xl border border-slate-100 bg-slate-50 p-4 overflow-y-auto ${
-                      tab.id === 'linkedinMessage' ? 'max-h-48' :
-                      tab.id === 'whyThisCompany' ? 'max-h-48' : 'max-h-[480px]'
-                    } ${tab.mono ? 'resume-content' : 'text-sm text-slate-700 whitespace-pre-wrap leading-relaxed'}`}
-                  >
-                    {content}
-                  </div>
+                  <textarea
+                    value={content}
+                    onChange={e => setContent(e.target.value)}
+                    className={`w-full rounded-xl border border-slate-100 bg-slate-50 p-4 resize-y focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-300 leading-relaxed ${
+                      tab.id === 'linkedinMessage' ? 'min-h-[120px] max-h-60' :
+                      tab.id === 'whyThisCompany'  ? 'min-h-[120px] max-h-60' :
+                                                     'min-h-[420px] max-h-[700px]'
+                    } ${tab.mono
+                        ? 'font-mono text-xs text-slate-700'
+                        : 'text-sm text-slate-700'
+                    }`}
+                  />
 
                   {tab.id === 'linkedinMessage' && (
                     <p className="text-[11px] text-slate-400">
