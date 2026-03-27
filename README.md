@@ -1,6 +1,6 @@
 # Resume & Cover Letter Generator
 
-<video src="linkedin_video.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/aab7062b-0d6f-4a6c-a04e-95e4fe9e6803" controls width="100%"></video>
 
 An AI-powered web app that takes your resume and a job description, then generates:
 
