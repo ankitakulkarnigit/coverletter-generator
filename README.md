@@ -1,5 +1,7 @@
 # Resume & Cover Letter Generator
 
+<video src="linkedin_video.mp4" controls width="100%"></video>
+
 An AI-powered web app that takes your resume and a job description, then generates:
 
 - **ATS-optimized resume** tailored to the job
